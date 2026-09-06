@@ -1,0 +1,22 @@
+# Environment / credentials
+.env
+
+# Runtime logs
+logs/*.json
+logs/*.log
+*.log
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+env/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
