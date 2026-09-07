@@ -588,10 +588,422 @@ Trước khi chuyển sang chạy hệ thống, kiểm tra:
 Khi tất cả điều kiện trên được đáp ứng, hệ thống sẵn sàng chuyển sang bước Usage.
 ## 9. Usage
 
+Sau khi hoàn tất các bước **Installation**, **Environment Configuration** và **Prerequisites**, có thể tiến hành chạy hệ thống.
+
+### 9.1. Kích hoạt Virtual Environment
+
+Trước khi chạy chương trình, kích hoạt Python virtual environment.
+
+Linux / Ubuntu
+
+```bash
+source .venv/bin/activate
+```
+Windows PowerShell
+```bash
+.venv\Scripts\Activate.ps1
+```
+### 9.2. Kiểm tra cấu hình
+
+Đảm bảo file .env đã được cấu hình đầy đủ:
+
+PFSENSE_IP=192.168.x.x
+PFSENSE_USER=admin
+PFSENSE_INTERFACE=lan
+EVE_LOG_PATH=./logs/eve.json
+
+Đồng thời kiểm tra các thành phần cần thiết:
+
+model/sqli_model.pkl
+logs/eve.json
+.env
+src/realtime_ids.py
+
+### 9.3. Kiểm tra kết nối SSH tới pfSense
+
+Trước khi chạy hệ thống, kiểm tra khả năng kết nối SSH từ máy chạy Python tới pfSense:
+ssh <PFSENSE_USER>@<PFSENSE_IP>
+
+Ví dụ:
+ssh admin@192.168.x.x
+Nếu kết nối thành công, thoát khỏi phiên SSH:
+exit
+
+### 9.4. Chạy Python Detector
+
+Chạy chương trình:
+python src/realtime_ids.py
+
+Trên Linux / Ubuntu có thể sử dụng:
+python3 src/realtime_ids.py
+
+Sau khi khởi động, Python Detector sẽ theo dõi file eve.json để xử lý các security events mới.
+Luồng xử lý:
+
+Start Python Detector
+        ↓
+Load .env Configuration
+        ↓
+Load ML Model
+        ↓
+Monitor eve.json
+        ↓
+Receive New Security Event
+        ↓
+Extract HTTP Payload
+        ↓
+ML Analysis
+        ↓
+SQL Injection Detected?
+      /       \
+    No         Yes
+    ↓           ↓
+Continue     Identify
+Monitoring   Attacker IP
+                ↓
+             SSH pfSense
+                ↓
+             Block IP
+
+### 9.5. Tạo Traffic kiểm thử
+
+Sau khi Python Detector đang chạy, sử dụng máy Attacker để tạo HTTP request tới DVWA.
+Môi trường kiểm thử:
+
+Attacker
+   │
+   │ HTTP Request
+   │ SQL Injection Payload
+   ▼
+  DVWA
+   │
+   ▼
+pfSense + Suricata
+   │
+   ▼
+eve.json
+   │
+   ▼
+Python Detector
+
+Có thể sử dụng các chức năng SQL Injection của DVWA để tạo traffic phục vụ kiểm thử hệ thống.
+
+### 9.6. Kiểm tra Security Event
+
+Khi có traffic được Suricata ghi nhận, kiểm tra file:
+tail -f logs/eve.json
+
+Hoặc kiểm tra các event mới:
+tail -n 20 logs/eve.json
+
+Python Detector sẽ đọc các event mới từ file log và thực hiện quá trình phân tích.
+
+### 9.7. Kiểm tra phản ứng tự động
+
+Khi Machine Learning model xác định payload có dấu hiệu SQL Injection, Python Detector sẽ:
+
+SQL Injection Detected
+        ↓
+Identify Attacker IP
+        ↓
+SSH → pfSense
+        ↓
+easyrule block <IP>
+        ↓
+pfctl -k <IP>
+        ↓
+Attacker IP Blocked
+
+Sau khi block, attacker sẽ không thể tiếp tục truy cập tài nguyên được bảo vệ thông qua IP đã bị chặn.
+
 ## 10. Detection and Response
+
+Hệ thống triển khai quy trình **Detection → Analysis → Response** nhằm phát hiện và tự động ngăn chặn hành vi SQL Injection trong môi trường lab.
+
+Quy trình được thực hiện thông qua sự phối hợp giữa **Suricata**, **eve.json**, **Python Detector**, **Machine Learning** và **pfSense Firewall**.
+
+### 10.1. Detection – Thu thập Security Events
+
+Suricata được triển khai trên pfSense để giám sát network traffic.
+Khi attacker gửi HTTP request tới DVWA, traffic được Suricata phân tích và các security events được ghi nhận vào file:
+
+```text
+eve.json
+```
+Luồng Detection:
+
+Attacker
+    │
+    │ HTTP Request
+    ▼
+  DVWA
+    │
+    │ Network Traffic
+    ▼
+pfSense + Suricata
+    │
+    │ Security Event
+    ▼
+eve.json
+
+### 10.2. Analysis – Phân tích Security Event
+
+Python Detector src/realtime_ids.py theo dõi các event mới được ghi vào eve.json.
+Khi nhận được event phù hợp, chương trình thực hiện:
+
+Đọc security event từ eve.json.
+Phân tích thông tin HTTP request.
+Trích xuất payload cần kiểm tra.
+Chuẩn bị dữ liệu đầu vào cho Machine Learning model.
+Sử dụng model để phân loại payload.
+Xác định request có dấu hiệu SQL Injection hay không.
+
+Luồng xử lý:
+
+eve.json
+    ↓
+Python Detector
+    ↓
+Read Security Event
+    ↓
+Extract HTTP Request
+    ↓
+Extract Payload
+    ↓
+Machine Learning Model
+    ↓
+SQL Injection Classification
+
+### 10.3. Machine Learning Detection
+
+Machine Learning model được lưu tại:
+model/sqli_model.pkl
+
+Python Detector sử dụng model này để hỗ trợ phân loại các payload HTTP.
+
+Quá trình phân tích:
+
+HTTP Payload
+     ↓
+Preprocessing
+     ↓
+ML Model
+     ↓
+Prediction
+     ↓
+┌───────────────────────┐
+│ SQL Injection ?       │
+└───────────┬───────────┘
+            │
+       ┌────┴────┐
+       │         │
+      No        Yes
+       │         │
+       ▼         ▼
+Continue      Threat
+Monitoring    Detected
+
+Nếu payload không được xác định là SQL Injection, hệ thống tiếp tục theo dõi các security events tiếp theo.
+Nếu payload được xác định là SQL Injection, hệ thống chuyển sang giai đoạn Response.
+
+### 10.4. Xác định Attacker IP
+
+Sau khi phát hiện hành vi SQL Injection, Python Detector xác định địa chỉ IP nguồn của request.
+Thông tin IP được sử dụng để xác định nguồn thực hiện hành vi tấn công:
+
+SQL Injection Detected
+        ↓
+Extract Source IP
+        ↓
+Attacker IP Identified
+
+Địa chỉ IP này sẽ được sử dụng làm đối tượng cho cơ chế block trên pfSense.
+
+### 10.5. Response – Tự động chặn Attacker
+
+Sau khi xác định attacker IP, Python Detector sử dụng SSH để kết nối tới pfSense.
+Python thực hiện gửi lệnh firewall tới pfSense:
+
+Python Detector
+       │
+       │ SSH
+       ▼
+    pfSense
+       │
+       ├── easyrule block <IP>
+       │
+       └── pfctl -k <IP>
+
+Trong đó:
+easyrule được sử dụng để tạo rule block địa chỉ IP.
+pfctl được sử dụng để xử lý các network connections hiện tại liên quan tới IP bị chặn.
+
+Quá trình Response:
+
+Threat Detected
+      ↓
+Attacker IP Identified
+      ↓
+SSH Connection
+      ↓
+pfSense
+      ↓
+Create Block Rule
+      ↓
+Terminate Existing Connections
+      ↓
+Attacker Blocked
+
+### 10.6. Detection → Analysis → Response Pipeline
+
+Toàn bộ cơ chế xử lý có thể được biểu diễn như sau:
+
+┌─────────────────────────────────────────────────────────────┐
+│                        DETECTION                            │
+│                                                             │
+│ Attacker → DVWA → pfSense + Suricata → eve.json            │
+└────────────────────────────┬────────────────────────────────┘
+                             │
+                             ▼
+┌─────────────────────────────────────────────────────────────┐
+│                         ANALYSIS                            │
+│                                                             │
+│ eve.json → Python Detector → HTTP Payload → ML Model       │
+│                                      │                      │
+│                                      ▼                      │
+│                              SQL Injection?                  │
+└────────────────────────────┬────────────────────────────────┘
+                             │
+                             │ Yes
+                             ▼
+┌─────────────────────────────────────────────────────────────┐
+│                         RESPONSE                            │
+│                                                             │
+│ Attacker IP → SSH → pfSense → easyrule → pfctl → Block IP │
+└─────────────────────────────────────────────────────────────┘
+
+### 10.7. Security Event Processing
+
+Hệ thống xử lý security event theo chu trình:
+
+New Event
+   ↓
+Read Event
+   ↓
+Check HTTP Data
+   ↓
+Extract Payload
+   ↓
+ML Prediction
+   ↓
+Threat Detected?
+   │
+   ├── No ──→ Continue Monitoring
+   │
+   └── Yes
+          ↓
+      Get Source IP
+          ↓
+      Check Block Status
+          ↓
+      SSH to pfSense
+          ↓
+      Block Attacker IP
+          ↓
+      Continue Monitoring
+
+### 10.8. Vai trò của từng thành phần trong Detection & Response
+| Thành phần           | Giai đoạn | Vai trò                                                         |
+| -------------------- | --------- | --------------------------------------------------------------- |
+| **Suricata**         | Detection | Giám sát network traffic và tạo security events                 |
+| **eve.json**         | Detection | Lưu trữ security events để phân tích                            |
+| **Python Detector**  | Analysis  | Đọc và xử lý các security events                                |
+| **Machine Learning** | Analysis  | Phân loại payload và hỗ trợ phát hiện SQL Injection             |
+| **SSH**              | Response  | Kết nối Python Detector tới pfSense                             |
+| **easyrule**         | Response  | Tạo rule block attacker IP                                      |
+| **pfctl**            | Response  | Xử lý network connections liên quan tới IP bị chặn              |
+| **pfSense**          | Response  | Thực thi chính sách firewall và ngăn attacker tiếp tục truy cập |
 
 ## 11. Demo Scenario
 
+Chương này mô tả một kịch bản kiểm thử hoàn chỉnh nhằm minh họa khả năng **phát hiện và phản ứng tự động** của hệ thống đối với hành vi SQL Injection.
+
+### 11.1. Mục tiêu Demo
+
+Kịch bản demo nhằm kiểm tra toàn bộ pipeline:
+
+```text
+Attack
+  ↓
+Detection
+  ↓
+Analysis
+  ↓
+Threat Identification
+  ↓
+Automated Response
+  ↓
+IP Blocking
+```
+
+| Thành phần           | Vai trò                                         |
+| -------------------- | ----------------------------------------------- |
+| **Attacker**         | Tạo HTTP request chứa SQL Injection payload     |
+| **DVWA**             | Mục tiêu kiểm thử                               |
+| **pfSense**          | Firewall và môi trường triển khai Suricata      |
+| **Suricata**         | Giám sát network traffic và tạo security events |
+| **eve.json**         | Lưu trữ security events                         |
+| **Python Detector**  | Đọc event và thực hiện phân tích                |
+| **ML Model**         | Hỗ trợ phát hiện SQL Injection                  |
+| **SSH**              | Kết nối tới pfSense để thực hiện Response       |
+| **easyrule / pfctl** | Thực hiện block attacker IP                     |
+### 11.2. Demo Environment
+
+┌───────────────┐
+│    Attacker   │
+│  Kali/Ubuntu  │
+└───────┬───────┘
+        │
+        │ HTTP Request
+        │ SQL Injection
+        ▼
+┌───────────────┐
+│     DVWA      │
+│ Web Target    │
+└───────┬───────┘
+        │
+        │ Network Traffic
+        ▼
+┌────────────────────┐
+│      pfSense       │
+│    + Suricata IDS  │
+└─────────┬──────────┘
+          │
+          │ Security Event
+          ▼
+┌────────────────────┐
+│      eve.json      │
+└─────────┬──────────┘
+          │
+          │ Event Data
+          ▼
+┌────────────────────┐
+│  Python Detector   │
+│    + ML Model      │
+└─────────┬──────────┘
+          │
+          │ SSH
+          ▼
+┌────────────────────┐
+│      pfSense       │
+│     Block IP       │
+└────────────────────┘
+
+### 11.3 Demo Video
+Video 1: Kiểm tra nền tảng → pfSense + Suricata hoạt động, cảnh báo SQLi xuất hiện trên Ubuntu.
+
+
+Video 2: Kiểm tra hệ thống hoàn chỉnh → AI chạy realtime → Detect SQLi → xác định IP → tự động chặn trên pfSense.
 ## 12. Future Improvements
 
 ## 13. Disclaimer
